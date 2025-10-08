@@ -49,10 +49,31 @@ def parse_ads_b_line(line):
 def timestamp_to_utc(timestamp):
     return datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
+# функция для проверки передачи сообщением координат
+def has_coords(msg_str):
+    try:
+        # получение DF
+        df = pms.df(msg_str)
+        # только ADS-B сообщения имеют координаты
+        if df != 17:
+            return False
+        # type code ADS-B сообщения
+        tc = pms.adsb.typecode(msg_str)
+        # является ли сообщение позиционным (воздушные и наземные сообщения)
+        if (5 <= tc <= 8) or (9 <= tc <= 18) or (20 <= tc <= 22):
+            return True
+        return False
+    except:
+        return False
+
+# файл
 file_path = "2025-10-03.1759515715.074510429.t4433"
 
 # словарь для первого и последнего времени для каждого ICAO
 icao_times = {}
+
+# словарь для отслеживания координат
+icao_coords = {}
 
 try:
     with open(file_path, "r") as f:
@@ -84,14 +105,17 @@ try:
                     icao_times[aa] = {"first": msg.timestamp, "last": msg.timestamp}
                 else:
                     icao_times[aa]["last"] = msg.timestamp
+            # проверка наличия координат
+            if aa and has_coords(message_str):
+                icao_coords[aa] = True
 
 
     # вывод таблицы
-    print("=" * 107)
+    print("=" * 125)
     print("\t"*5 + "Таблица появления и исчезновения бортов")
-    print("=" * 107)
-    print(f"{'ICAO':<8} {'Первое по UTC':<25} {'Первое по МСК':<25} {'Последнее по UTC':<25} {'Последнее по МСК':<25}")
-    print("=" * 107)
+    print("=" * 125)
+    print(f"{'ICAO':<8} {'Первое по UTC':<22} {'Первое по МСК':<22} {'Последнее по UTC':<22} {'Последнее по МСК':<22} {'Переданы ли координаты':<15}")
+    print("=" * 125)
 
     tz_msk = pytz.timezone('Europe/Moscow')
 
@@ -102,11 +126,18 @@ try:
         first_msk = first_utc.astimezone(tz_msk)
         last_msk = last_utc.astimezone(tz_msk)
 
-        print(f"{icao:<8} {first_utc.strftime('%Y-%m-%d %H:%M:%S'):<25} "
-              f"{first_msk.strftime('%Y-%m-%d %H:%M:%S'):<25} "
-              f"{last_utc.strftime('%Y-%m-%d %H:%M:%S'):<25} "
-              f"{last_msk.strftime('%Y-%m-%d %H:%M:%S'):<25}")
-        print("-" * 107)
+        coord_flag = ""
+        if icao_coords.get(icao, False):
+            coord_flag = "Да"
+        else:
+            coord_flag = "Нет"
+
+        print(f"{icao:<8} {first_utc.strftime('%Y-%m-%d %H:%M:%S'):<22} "
+              f"{first_msk.strftime('%Y-%m-%d %H:%M:%S'):<22} "
+              f"{last_utc.strftime('%Y-%m-%d %H:%M:%S'):<22} "
+              f"{last_msk.strftime('%Y-%m-%d %H:%M:%S'):<22} "
+              f"{coord_flag:<15}")
+        print("-" * 125)
         
     print(f"\nВсего бортов: {len(icao_times)}\n")
 
