@@ -70,6 +70,33 @@ def has_coords(msg_str):
     except:
         return False
 
+# функция для получения высоты
+def get_altitude(msg_str):
+    try:
+        if pms.df(msg_str) != 17:
+            return None
+        tc = pms.adsb.typecode(msg_str)
+        if 9 <= tc <= 18:
+            alt = pms.adsb.altitude(msg_str)
+            return alt
+        return None
+    except:
+        return None
+
+# функция для получения скорости
+def get_velocity(msg_str):
+    try:
+        if pms.df(msg_str) != 17:
+            return None
+        tc = pms.adsb.typecode(msg_str)
+        if tc == 19:
+            result = pms.adsb.velocity(msg_str)
+            if result and result[0] is not None:
+                return result[0]
+        return None
+    except:
+        return None
+
 class IcaoGraphs:
     def __init__(self, alt_dict, spd_dict):
         # список бортов, у которых есть данные
@@ -130,8 +157,9 @@ class IcaoGraphs:
             self.ax.grid(False)
         else:
             # строится график, если есть данные
-            times = [timestamp_to_utc(t) for t, _ in data]
-            values = [v for _, v in data]
+            data_sorted = sorted(data)
+            times = [timestamp_to_utc(t) for t, _ in data_sorted]
+            values = [v for _, v in data_sorted]
 
             self.ax.plot(times, values, label=label, linewidth=2)
             self.ax.set_xlabel("Время (UTC)", labelpad=15)
@@ -215,20 +243,18 @@ try:
             # проверка наличия координат
             if aa and has_coords(message_str):
                 icao_coords[aa] = True
-            # высота
-            try:
-                alt = pms.adsb.altitude(message_str)
-                if alt is not None:
-                    icao_altitude.setdefault(aa, []).append((msg.timestamp, alt))
-            except:
-                pass
-            # скорость
-            try:
-                gs, trk, vs, speed_type = pms.adsb.velocity(message_str)
-                if gs is not None:
-                    icao_speed.setdefault(aa, []).append((msg.timestamp, gs))
-            except:
-                pass
+                
+            # получение высоты
+            alt = get_altitude(message_str)
+            # проверка диапазона высот
+            if alt is not None and -1000 <= alt <= 50000:
+                icao_altitude.setdefault(aa, []).append((msg.timestamp, alt))
+                
+            # получение скорости  
+            gs = get_velocity(message_str)
+            # проверка диапазона скоростей
+            if gs is not None and 0 <= gs <= 1000:
+                icao_speed.setdefault(aa, []).append((msg.timestamp, gs))
 
     # вывод таблицы
     print("=" * 125)
