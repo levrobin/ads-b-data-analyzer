@@ -1,3 +1,7 @@
+# указание бэкенда для matplotlib 
+import matplotlib
+matplotlib.use('TkAgg')
+
 import numpy as np 
 import pyModeS as pms 
 from datetime import datetime, timezone 
@@ -10,7 +14,7 @@ import tkinter as tk
 from tkinter import ttk
 
 MAX_MESSAGE_LENGTH = 14 
-DEFAULT_FILE = "2025-10-03.1759515715.074510429.t4433" # использует этот файл по умолчанию
+DEFAULT_FILE = "2025-10-03.1759515715.074510429.t4433"
 
 def parse_adsb_line(line):
     # делим строку по пробелам
@@ -67,12 +71,14 @@ class IcaoGraphs:
         self.fig, self.ax = plt.subplots(figsize=(8, 8)) 
         plt.subplots_adjust(bottom=0.2)
 
+        # создаём и размещаем кнопки под графиком
         ax_prev = plt.axes([0.15, 0.05, 0.25, 0.075]); ax_next = plt.axes([0.45, 0.05, 0.25, 0.075])
         ax_switch = plt.axes([0.75, 0.05, 0.15, 0.075])
         self.btn_prev = Button(ax_prev, '<- Предыдущий', color='lightblue', hovercolor='skyblue')
         self.btn_next = Button(ax_next, 'Следующий ->', color='lightblue', hovercolor='skyblue')
         self.btn_switch = Button(ax_switch, 'Режим', color='lightgreen', hovercolor='limegreen')
         
+        # назначаем кнопкам действия
         self.btn_prev.on_clicked(self.prev)
         self.btn_next.on_clicked(self.next)
         self.btn_switch.on_clicked(self.switch_mode)
@@ -104,6 +110,7 @@ class IcaoGraphs:
 
         self.ax.set_aspect('auto', adjustable='box')
 
+        # готовим данные, заголовок и подписи для нужного графика
         if current_mode == 'track':
             data, label, title = self.coords_dict.get(icao, []), "Трек", f"Схема трека полёта для {icao}"
         else:
@@ -114,6 +121,9 @@ class IcaoGraphs:
         
         if hasattr(self.fig.canvas.manager, 'set_window_title'):
             self.fig.canvas.manager.set_window_title(title)
+
+        self.ax.set_title(title)
+        self.ax.grid(True, linestyle='--', alpha=0.7)
 
         if not data:
             self.ax.text(0.5, 0.5, f"Нет данных для этого графика", ha='center', va='center', fontsize=14)
@@ -132,24 +142,30 @@ class IcaoGraphs:
                 self.ax.set_xlabel("Время (UTC)"); self.ax.set_ylabel(label)
                 self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
                 self.fig.autofmt_xdate(rotation=30)
+            
+            # легенда создается только если есть данные
+            self.ax.legend()
         
-        self.ax.set_title(title); self.ax.grid(True, linestyle='--', alpha=0.7); self.ax.legend()
         self.fig.canvas.draw_idle()
 
+    # переключает на следующий график
     def next(self, event=None):
         limit = len(self.icao_list) * 2 if self.plot_modes[self.plot_mode_idx] == 'main' else len(self.icao_list)
         self.index = (self.index + 1) % limit
         self.plot_current()
 
+    # переключает на предыдущий график
     def prev(self, event=None):
         limit = len(self.icao_list) * 2 if self.plot_modes[self.plot_mode_idx] == 'main' else len(self.icao_list)
         self.index = (self.index - 1 + limit) % limit
         self.plot_current()
 
+    # обрабатывает нажатия клавиш
     def on_key(self, event):
         if event.key in ['right', 'down']: self.next()
         elif event.key in ['left', 'up']: self.prev()
         elif event.key == 'm': self.switch_mode(event)
+
 
 # создает и управляет главным окном с таблицей бортов
 class AircraftTableGUI:

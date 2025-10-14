@@ -1,0 +1,2 @@
+[console_scripts]
+modeslive = pyModeS.streamer.modeslive:main
