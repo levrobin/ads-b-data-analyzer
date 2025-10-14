@@ -112,28 +112,24 @@ def get_selected_altitude(msg_str):
         if tc != 29:
             return None
 
-        payload_hex = msg_str[8:]  # пропуск 8 символов заголовка (DF+ICAO)
-        payload_bin = bin(int(payload_hex, 16))[2:].zfill(80)
-
-        # подтип — биты 33–35 (индексы 32–34)
-        subtype = int(payload_bin[32:35], 2)
-        if subtype != 1:
+        sel_alt_info = pms.adsb.selected_altitude(msg_str)
+        
+        if sel_alt_info is None:
             return None
-
-        # selected altitude — биты 36–47 (индексы 35–46)
-        sel_alt_raw = int(payload_bin[35:47], 2)
-
-        selected_alt = sel_alt_raw * 25 - 1000  # шаг 25 футов, минус 1000 для корректного диапазона
-
-        # режимы — биты 48–53 (индексы 47–52)
+            
+        selected_alt = sel_alt_info[0]  # выбранная высота в футах
         modes = set()
-        if len(payload_bin) >= 53:
-            if payload_bin[47] == '1': modes.add("AP")
-            if payload_bin[48] == '1': modes.add("VNAV")
-            if payload_bin[49] == '1': modes.add("ALT")
-            if payload_bin[50] == '1': modes.add("APP")
-            if payload_bin[51] == '1': modes.add("LNAV")
-            if payload_bin[52] == '1': modes.add("TCAS")
+        
+        # получение информации о режимах из результата
+        if len(sel_alt_info) > 1:
+            mode_info = sel_alt_info[1]
+            if mode_info:
+                if 'AP' in mode_info: modes.add("AP")
+                if 'VNAV' in mode_info: modes.add("VNAV")
+                if 'ALT' in mode_info: modes.add("ALT")
+                if 'APP' in mode_info: modes.add("APP")
+                if 'LNAV' in mode_info: modes.add("LNAV")
+                if 'TCAS' in mode_info: modes.add("TCAS")
 
         # проверка на разумные значения
         if -2000 <= selected_alt <= 50000:
@@ -143,7 +139,6 @@ def get_selected_altitude(msg_str):
     except Exception as e:
         print(f"Ошибка извлечения выбранной высоты: {e}")
         return None
-
 
 # функция для получения номера рейса
 def get_callsign(msg_str):
