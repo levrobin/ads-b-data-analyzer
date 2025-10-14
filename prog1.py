@@ -104,9 +104,6 @@ def get_velocity(msg_str):
 # функция для получения выбранной высоты из сообщения типа 29 подтипа 1
 def get_selected_altitude(msg_str):
     try:
-        if len(msg_str) < 28:
-            return None
-
         df = pms.df(msg_str)
         if df not in [17, 18]:
             return None
@@ -115,29 +112,30 @@ def get_selected_altitude(msg_str):
         if tc != 29:
             return None
 
-        # полезная нагрузка после DF (5 бит) и ICAO (24 бита)
-        payload_hex = msg_str[8:]  
-        payload_bin = bin(int(payload_hex, 16))[2:].zfill(80)  # 80 бит полезной нагрузки
+        payload_hex = msg_str[8:]  # пропуск 8 символов заголовка (DF+ICAO)
+        payload_bin = bin(int(payload_hex, 16))[2:].zfill(80)
 
-        # подтип — биты 33–35 (индексы 32–35)
+        # подтип — биты 33–35 (индексы 32–34)
         subtype = int(payload_bin[32:35], 2)
         if subtype != 1:
             return None
 
-        # выбранная высота — биты 34–45 (индексы 33–45)
-        sel_alt_raw = int(payload_bin[33:45], 2)
-        selected_alt = sel_alt_raw * 32  # шаг 32 фута
+        # selected altitude — биты 36–47 (индексы 35–46)
+        sel_alt_raw = int(payload_bin[35:47], 2)
 
-        # режимы — биты 46–51 (индексы 45–51)
+        selected_alt = sel_alt_raw * 25 - 1000  # шаг 25 футов, минус 1000 для корректного диапазона
+
+        # режимы — биты 48–53 (индексы 47–52)
         modes = set()
-        if len(payload_bin) >= 52:
-            if payload_bin[45] == '1': modes.add("AP")     # Autopilot
-            if payload_bin[46] == '1': modes.add("VNAV")   # VNAV
-            if payload_bin[47] == '1': modes.add("ALT")    # Alt Hold
-            if payload_bin[48] == '1': modes.add("APP")    # Approach
-            if payload_bin[49] == '1': modes.add("LNAV")   # LNAV
-            if payload_bin[50] == '1': modes.add("TCAS")   # TCAS
+        if len(payload_bin) >= 53:
+            if payload_bin[47] == '1': modes.add("AP")
+            if payload_bin[48] == '1': modes.add("VNAV")
+            if payload_bin[49] == '1': modes.add("ALT")
+            if payload_bin[50] == '1': modes.add("APP")
+            if payload_bin[51] == '1': modes.add("LNAV")
+            if payload_bin[52] == '1': modes.add("TCAS")
 
+        # проверка на разумные значения
         if -2000 <= selected_alt <= 50000:
             return selected_alt, modes
         return None
@@ -145,6 +143,7 @@ def get_selected_altitude(msg_str):
     except Exception as e:
         print(f"Ошибка извлечения выбранной высоты: {e}")
         return None
+
 
 # функция для получения номера рейса
 def get_callsign(msg_str):
@@ -343,17 +342,17 @@ class IcaoGraphs:
                     data_sorted = sorted(data)
                     times = [timestamp_to_utc(t) for t, _ in data_sorted]
                     values = [v for _, v in data_sorted]
-                    self.ax.plot(times, values, label='Барометрическая высота', 
-                               linewidth=2, color='blue', marker='o', markersize=3)
+                    self.ax.plot(times, values, label='Altitude', 
+                               linewidth=2, color='blue')
 
                 # отображение выбранной высоты
-                if icao in self.sel_alt_dict:
+                if icao in self.sel_alt_dict and self.sel_alt_dict[icao]:
                     sel_data = sorted(self.sel_alt_dict[icao])
-                    sel_times = [timestamp_to_utc(t) for t, _ in sel_data]
-                    sel_values = [v for _, v in sel_data]
-                    self.ax.plot(sel_times, sel_values, label='Выбранная высота', 
-                               linewidth=2, color='red', marker='s', markersize=4, linestyle='--')
-
+                    sel_times = [timestamp_to_utc(t) for t, v in sel_data if v is not None]
+                    sel_values = [v for t, v in sel_data if v is not None]
+                    if sel_times and sel_values:
+                        self.ax.plot(sel_times, sel_values, label='Selected altitude', 
+                                    linewidth=2, color='red', linestyle='-')
                 self.ax.set_xlabel("Время (UTC)", labelpad=15)
                 self.ax.set_ylabel(label, labelpad=15)
                 self.ax.set_title(title)
@@ -364,9 +363,9 @@ class IcaoGraphs:
                 # создание легенд с обоими типами данных
                 legend_items = []
                 if data:
-                    legend_items.append('Барометрическая высота')
+                    legend_items.append('Altitude')
                 if icao in self.sel_alt_dict:
-                    legend_items.append('Выбранная высота')
+                    legend_items.append('Selected altitude')
                 
                 if callsign != "N/A":
                     legend_title = f"{callsign}"
@@ -498,8 +497,6 @@ try:
             # фильтрация по ICAO (если указан целевой борт)
             if target_icao and aa != target_icao:
                 continue
-
-            # print(f"{msg.timestamp:.9f} {message_spaced} DF {df} ICAO {aa}")
 
             # добавление ICAO в список ADS-B бортов
             adsb_icao_list.add(aa)
