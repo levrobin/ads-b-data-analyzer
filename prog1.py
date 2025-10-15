@@ -1,323 +1,429 @@
-# указание бэкенда для matplotlib 
-import matplotlib
-matplotlib.use('TkAgg')
+import numpy as np
+import pyModeS as pms
+from datetime import datetime, timezone
+import argparse
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.widgets import Button
 
-import numpy as np 
-import pyModeS as pms 
-from datetime import datetime, timezone 
-import pytz 
-import argparse 
-import matplotlib.pyplot as plt 
-import matplotlib.dates as mdates 
-from matplotlib.widgets import Button 
-import tkinter as tk
-from tkinter import ttk
-
-MAX_MESSAGE_LENGTH = 14 
+MAX_MESSAGE_LENGTH = 14
 DEFAULT_FILE = "2025-10-03.1759515715.074510429.t4433"
 
-def parse_adsb_line(line):
-    # делим строку по пробелам
-    parts = line.strip().split() 
-    # если в строке меньше двух частей, она неверная
-    if len(parts) < 2: return None 
-    try:
-        # пытаемся превратить первую часть в число
-        timestamp = np.float64(parts[0]) 
-    except ValueError:
-        return None 
-    # остальное склеиваем в одну hex-строку
-    msg_str = ''.join(parts[1:]).upper().strip() 
-    # проверяем, что там только hex-символы
-    if not all(c in "0123456789ABCDEF" for c in msg_str): return None 
-    # проверяем, что сообщение не слишком короткое
-    if len(msg_str) < MAX_MESSAGE_LENGTH * 2: return None 
-    # если всё хорошо, возвращаем результат
-    return timestamp, msg_str 
+# ИСПРАВЛЕНО: Словарь для преобразования режимов автопилота
+MODE_MAP = {
+    'U': 'AP',      # Autopilot On
+    '/': 'ALT',     # Altitude Hold
+    'M': 'VNAV',    # Vertical Navigation
+    'F': 'LNAV',    # Lateral Navigation
+    'P': 'APP',     # Approach Mode
+    'T': 'TCAS',    # TCAS RA active
+    'C': 'HDG'      # Selected Heading
+}
 
-# переводит время в utc
+class ADSBMessage:
+    def __init__(self):
+        self.timestamp = np.float64(0.0)
+        self.message = np.zeros(MAX_MESSAGE_LENGTH, dtype=np.uint8)
+        self.message_length = 0
+
+def parse_ads_b_line(line):
+    parts = line.strip().split()
+    if len(parts) < 2:
+        return None
+    try:
+        timestamp = np.float64(parts[0])
+    except ValueError:
+        return None
+    message_spaced = ' '.join(parts[1:]).upper().strip()
+    message_str = message_spaced.replace(" ", "")
+    if len(message_str) == 0 or not all(c in "0123456789ABCDEF" for c in message_str):
+        return None
+    msg = ADSBMessage()
+    msg.timestamp = timestamp
+    bytes_list = [int(message_str[i:i + 2], 16) for i in range(0, len(message_str), 2)]
+    msg.message_length = min(len(bytes_list), MAX_MESSAGE_LENGTH)
+    for i in range(msg.message_length):
+        msg.message[i] = np.uint8(bytes_list[i])    
+    return msg, message_spaced, message_str
+
 def timestamp_to_utc(timestamp):
     return datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
-# пытается извлечь курс из сообщения 19-го типа
+def format_timestamp_with_nanoseconds(ts):
+    main_dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+    main_dt_str = main_dt.strftime('%Y-%m-%d %H:%M:%S')
+    ts_str = f"{ts:.9f}"
+    nanoseconds_str = ts_str.split('.')[1]
+    return f"{main_dt_str}.{nanoseconds_str}"
+
+def get_altitude(msg_str):
+    try:
+        df = pms.df(msg_str)
+        if df not in [17, 18]: return None
+        tc = pms.adsb.typecode(msg_str)
+        if 9 <= tc <= 18:
+            return pms.adsb.altitude(msg_str)
+        return None
+    except:
+        return None
+
+def get_velocity(msg_str):
+    try:
+        df = pms.df(msg_str)
+        if df not in [17, 18]: return None
+        tc = pms.adsb.typecode(msg_str)
+        if tc == 19:
+            result = pms.adsb.velocity(msg_str)
+            if result and result[0] is not None:
+                return result[0]
+        return None
+    except:
+        return None
+
 def get_course(msg_str):
     try:
-        # узнаём тип сообщения
-        tc = pms.adsb.typecode(msg_str) 
-        if tc == 19: 
-            _, h, _, _ = pms.adsb.velocity(msg_str)
-            return h 
-    except Exception:
-        return None 
-    return None
+        df = pms.df(msg_str)
+        if df not in [17, 18]: return None
+        tc = pms.adsb.typecode(msg_str)
+        if tc == 19:
+            _, heading, _, _ = pms.adsb.velocity(msg_str)
+            return heading
+        return None
+    except:
+        return None
 
-# этот класс отвечает за создание и управление окном с графиками
+def get_selected_altitude(msg_str):
+    try:
+        df = pms.df(msg_str)
+        if df not in [17, 18]: return None
+        tc = pms.adsb.typecode(msg_str)
+        if tc != 29: return None
+        sel_alt_info = pms.adsb.selected_altitude(msg_str)
+        if sel_alt_info is None: return None
+        selected_alt, raw_modes = sel_alt_info
+        if selected_alt is not None and -2000 <= selected_alt <= 50000:
+            # ИСПРАВЛЕНО: Преобразуем однобуквенные режимы в понятные сокращения
+            processed_modes = {MODE_MAP.get(m, m) for m in raw_modes}
+            return selected_alt, processed_modes
+        return None
+    except Exception as e:
+        return None
+
+def get_callsign(msg_str):
+    try:
+        df = pms.df(msg_str)
+        if df not in [17, 18]: return None
+        tc = pms.adsb.typecode(msg_str)
+        if 1 <= tc <= 4:
+            callsign = pms.adsb.callsign(msg_str)
+            if not callsign: return None
+            return ''.join(c for c in callsign if c.isalnum())
+        return None
+    except:
+        return None
+
 class IcaoGraphs:
-    def __init__(self, coords_dict, course_dict):
-        self.icao_list = sorted(set(coords_dict.keys()) | set(course_dict.keys()))
+    def __init__(self, alt_dict, spd_dict, pos_dict, course_dict, adsb_icao_list, icao_callsigns, icao_sel_alt):
+        icao_with_data = set(alt_dict.keys()) | set(spd_dict.keys()) | set(pos_dict.keys()) | set(course_dict.keys())
+        self.icao_list = sorted(list(icao_with_data.intersection(adsb_icao_list)))
+        
         if not self.icao_list:
-            root_info = tk.Tk()
-            root_info.withdraw()
-            tk.messagebox.showinfo("Нет данных", "Нет данных для построения графиков.")
-            root_info.destroy()
+            print("Нет данных для построения графиков")
             return
 
-        self.coords_dict = coords_dict
+        self.alt_dict = alt_dict
+        self.spd_dict = spd_dict
+        self.pos_dict = pos_dict
         self.course_dict = course_dict
-        self.index = 0
-        self.plot_modes = ['main', 'track'] 
+        self.icao_callsigns = icao_callsigns
+        self.sel_alt_dict = icao_sel_alt if icao_sel_alt else {}
+        self.icao_index = 0
+        self.plot_modes = ['altitude', 'speed', 'latitude', 'course', 'track']
         self.plot_mode_idx = 0
+        self.ylims = {mode: {} for mode in self.plot_modes}
+        self.default_ylims = {'altitude': (-1200, 40000), 'speed': (0, 500), 'course': (0, 360), 'latitude': 'auto'}
 
-        self.fig, self.ax = plt.subplots(figsize=(8, 8)) 
-        plt.subplots_adjust(bottom=0.2)
+        self.fig, self.ax = plt.subplots(figsize=(12, 7))
+        plt.subplots_adjust(bottom=0.25)
 
-        # создаём и размещаем кнопки под графиком
-        ax_prev = plt.axes([0.15, 0.05, 0.25, 0.075]); ax_next = plt.axes([0.45, 0.05, 0.25, 0.075])
-        ax_switch = plt.axes([0.75, 0.05, 0.15, 0.075])
-        self.btn_prev = Button(ax_prev, '<- Предыдущий', color='lightblue', hovercolor='skyblue')
-        self.btn_next = Button(ax_next, 'Следующий ->', color='lightblue', hovercolor='skyblue')
-        self.btn_switch = Button(ax_switch, 'Режим', color='lightgreen', hovercolor='limegreen')
+        ax_prev_icao = plt.axes([0.05, 0.05, 0.2, 0.075])
+        ax_next_icao = plt.axes([0.28, 0.05, 0.2, 0.075])
+        ax_prev_mode = plt.axes([0.52, 0.05, 0.2, 0.075])
+        ax_next_mode = plt.axes([0.75, 0.05, 0.2, 0.075])
+
+        self.btn_prev_icao = Button(ax_prev_icao, '<- Пред. борт', color='lightblue', hovercolor='skyblue')
+        self.btn_next_icao = Button(ax_next_icao, 'След. борт ->', color='lightblue', hovercolor='skyblue')
+        self.btn_prev_mode = Button(ax_prev_mode, '<- Пред. график', color='lightgreen', hovercolor='limegreen')
+        self.btn_next_mode = Button(ax_next_mode, 'След. график ->', color='lightgreen', hovercolor='limegreen')
+
+        self.btn_prev_icao.on_clicked(self.prev_icao)
+        self.btn_next_icao.on_clicked(self.next_icao)
+        self.btn_prev_mode.on_clicked(self.prev_mode)
+        self.btn_next_mode.on_clicked(self.next_mode)
         
-        # назначаем кнопкам действия
-        self.btn_prev.on_clicked(self.prev)
-        self.btn_next.on_clicked(self.next)
-        self.btn_switch.on_clicked(self.switch_mode)
-
         self.fig.canvas.mpl_connect('key_press_event', self.on_key)
+        self.fig.canvas.mpl_connect('scroll_event', self.on_scroll)
+        
         self.plot_current()
         plt.show()
 
-    # переключает режим отображения
-    def switch_mode(self, event):
-        self.plot_mode_idx = (self.plot_mode_idx + 1) % len(self.plot_modes)
-        self.index = 0
-        self.plot_current()
-
-    # главная функция, которая рисует текущий график
     def plot_current(self):
         self.ax.clear()
-        if not self.icao_list: return
 
-        current_mode = self.plot_modes[self.plot_mode_idx]
+        if not self.icao_list:
+            self.ax.text(0.5, 0.5, "Нет бортов с данными для отображения", ha='center', va='center')
+            self.fig.canvas.draw_idle()
+            return
 
-        if current_mode == 'main':
-            icao_index = self.index // 2; show_course = self.index % 2 == 1
-        else:
-            icao_index = self.index
+        icao = self.icao_list[self.icao_index]
+        mode = self.plot_modes[self.plot_mode_idx]
         
-        if icao_index >= len(self.icao_list): icao_index = 0
-        icao = self.icao_list[icao_index]
+        callsign = self.icao_callsigns.get(icao, "N/A")
+        modes_key = f"{icao}_modes"
+        active_modes = self.icao_callsigns.get(modes_key, set())
+        mode_str = f" ({', '.join(sorted(active_modes))})" if active_modes else ""
+        display_id = f"{callsign} ({icao}){mode_str}" if callsign != "N/A" else f"{icao}{mode_str}"
+        
+        data = None
+        label = ""
+        title = ""
 
-        self.ax.set_aspect('auto', adjustable='box')
-
-        # готовим данные, заголовок и подписи для нужного графика
-        if current_mode == 'track':
-            data, label, title = self.coords_dict.get(icao, []), "Трек", f"Схема трека полёта для {icao}"
-        else:
-            if show_course:
-                data, label, title = self.course_dict.get(icao, []), "Курс (°)", f"Изменение курса борта {icao}"
+        if mode == 'altitude':
+            data = self.alt_dict.get(icao)
+            sel_data = self.sel_alt_dict.get(icao)
+            title, label = f"Изменение высоты: {display_id}", "Высота (футы)"
+            if not data and not sel_data:
+                self.ax.text(0.5, 0.5, f"Нет данных о высоте для борта {icao}", ha='center', va='center')
             else:
-                data, label, title = self.coords_dict.get(icao, []), "Широта (°)", f"Изменение координат борта {icao}"
+                if data:
+                    times = [timestamp_to_utc(t) for t, v in sorted(data)]
+                    values = [v for t, v in sorted(data)]
+                    self.ax.plot(times, values, 'o-', markersize=3, label='Барометрическая высота', color='blue')
+                if sel_data:
+                    times = [timestamp_to_utc(t) for t, v in sorted(sel_data)]
+                    values = [v for t, v in sorted(sel_data)]
+                    self.ax.step(times, values, where='post', label='Выбранная высота', color='red', linestyle='--')
         
-        if hasattr(self.fig.canvas.manager, 'set_window_title'):
-            self.fig.canvas.manager.set_window_title(title)
+        elif mode == 'speed':
+            data = self.spd_dict.get(icao)
+            title, label = f"Изменение скорости: {display_id}", "Скорость (узлы)"
+            if not data:
+                self.ax.text(0.5, 0.5, f"Нет данных о скорости для борта {icao}", ha='center', va='center')
+            else:
+                times = [timestamp_to_utc(t) for t, v in sorted(data)]
+                values = [v for t, v in sorted(data)]
+                self.ax.plot(times, values, 'o-', markersize=3, label='Скорость', color='green')
 
+        elif mode == 'latitude':
+            data = self.pos_dict.get(icao)
+            title, label = f"Изменение координат: {display_id}", "Широта (°)"
+            if not data:
+                self.ax.text(0.5, 0.5, f"Нет данных о координатах для борта {icao}", ha='center', va='center')
+            else:
+                times = [timestamp_to_utc(t) for t, lat, lon in data]
+                lats = [lat for t, lat, lon in data]
+                self.ax.plot(times, lats, 'o-', markersize=3, label='Широта', color='orange')
+
+        elif mode == 'course':
+            data = self.course_dict.get(icao)
+            title, label = f"Изменение курса: {display_id}", "Курс (°)"
+            if not data:
+                self.ax.text(0.5, 0.5, f"Нет данных о курсе для борта {icao}", ha='center', va='center')
+            else:
+                times = [timestamp_to_utc(t) for t, v in sorted(data)]
+                values = [v for t, v in sorted(data)]
+                self.ax.plot(times, values, 'o-', markersize=3, label='Курс', color='purple')
+
+        elif mode == 'track':
+            data = self.pos_dict.get(icao)
+            title = f"Схема трека полёта: {display_id}"
+            if not data:
+                self.ax.text(0.5, 0.5, f"Нет данных о координатах для борта {icao}", ha='center', va='center')
+            else:
+                lons = [lon for t, lat, lon in data]
+                lats = [lat for t, lat, lon in data]
+                self.ax.plot(lons, lats, 'o', markersize=2, label='Трек')
+        
         self.ax.set_title(title)
         self.ax.grid(True, linestyle='--', alpha=0.7)
 
-        if not data:
-            self.ax.text(0.5, 0.5, f"Нет данных для этого графика", ha='center', va='center', fontsize=14)
+        if mode == 'track':
+            self.ax.set_aspect('equal', adjustable='box')
+            self.ax.set_xlabel("Долгота (°)")
+            self.ax.set_ylabel("Широта (°)")
         else:
-            if current_mode == 'track':
-                lons = [lon for _, lat, lon in data]; lats = [lat for _, lat, lon in data]
-                self.ax.plot(lons, lats, 'o', markersize=2, label=label) 
-                self.ax.set_xlabel("Долгота (°)"); self.ax.set_ylabel("Широта (°)")
-                self.ax.set_aspect('equal', adjustable='box') 
-            else:
-                times = [timestamp_to_utc(t) for t, *_ in data]
-                if self.index % 2 == 1: values = [v for _, v in data]
-                else: values = [lat for _, lat, lon in data]
-                
-                self.ax.plot(times, values, 'o-', label=label, linewidth=2, markersize=3)
-                self.ax.set_xlabel("Время (UTC)"); self.ax.set_ylabel(label)
-                self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-                self.fig.autofmt_xdate(rotation=30)
-            
-            # легенда создается только если есть данные
-            self.ax.legend()
+            self.ax.set_aspect('auto')
+            self.ax.set_xlabel("Время (UTC)")
+            self.ax.set_ylabel(label)
+            self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S.%f'))
+            self.fig.autofmt_xdate(rotation=30)
         
+        if self.ax.get_legend_handles_labels()[0]:
+            self.ax.legend()
+
+        ylim = self.ylims[mode].get(icao, self.default_ylims.get(mode))
+        if ylim and ylim != 'auto':
+            self.ax.set_ylim(ylim)
+
         self.fig.canvas.draw_idle()
 
-    # переключает на следующий график
-    def next(self, event=None):
-        limit = len(self.icao_list) * 2 if self.plot_modes[self.plot_mode_idx] == 'main' else len(self.icao_list)
-        self.index = (self.index + 1) % limit
+    def on_scroll(self, event):
+        if event.inaxes != self.ax or self.plot_modes[self.plot_mode_idx] == 'track': return
+        scale_factor = 1.1
+        ylim = self.ax.get_ylim()
+        y_range = ylim[1] - ylim[0]
+        mouse_y = event.ydata if event.ydata is not None else (ylim[0] + ylim[1]) / 2
+        if event.button == 'down': new_range = y_range / scale_factor
+        elif event.button == 'up': new_range = y_range * scale_factor
+        else: return
+        new_low = mouse_y - (mouse_y - ylim[0]) * (new_range / y_range)
+        new_high = new_low + new_range
+        min_range = 10
+        if new_range >= min_range:
+            self.ax.set_ylim(new_low, new_high)
+            icao = self.icao_list[self.icao_index]
+            mode = self.plot_modes[self.plot_mode_idx]
+            self.ylims[mode][icao] = (new_low, new_high)
+            self.fig.canvas.draw_idle()
+
+    def next_icao(self, event=None):
+        if not self.icao_list: return
+        self.icao_index = (self.icao_index + 1) % len(self.icao_list)
         self.plot_current()
 
-    # переключает на предыдущий график
-    def prev(self, event=None):
-        limit = len(self.icao_list) * 2 if self.plot_modes[self.plot_mode_idx] == 'main' else len(self.icao_list)
-        self.index = (self.index - 1 + limit) % limit
+    def prev_icao(self, event=None):
+        if not self.icao_list: return
+        self.icao_index = (self.icao_index - 1 + len(self.icao_list)) % len(self.icao_list)
         self.plot_current()
 
-    # обрабатывает нажатия клавиш
+    def next_mode(self, event=None):
+        if not self.icao_list: return
+        self.plot_mode_idx = (self.plot_mode_idx + 1) % len(self.plot_modes)
+        self.plot_current()
+
+    def prev_mode(self, event=None):
+        if not self.icao_list: return
+        self.plot_mode_idx = (self.plot_mode_idx - 1 + len(self.plot_modes)) % len(self.plot_modes)
+        self.plot_current()
+
     def on_key(self, event):
-        if event.key in ['right', 'down']: self.next()
-        elif event.key in ['left', 'up']: self.prev()
-        elif event.key == 'm': self.switch_mode(event)
+        if event.key == 'right': self.next_icao()
+        elif event.key == 'left': self.prev_icao()
+        elif event.key == 'up': self.next_mode()
+        elif event.key == 'down': self.prev_mode()
 
-
-# создает и управляет главным окном с таблицей бортов
-class AircraftTableGUI:
-    def __init__(self, master, all_data):
-        self.master = master
-        self.all_data = all_data
-        self.master.title("Таблица бортов (двойной клик для графиков)")
-        self.master.geometry("950x500")
-
-        self.tree = ttk.Treeview(master, columns=("icao", "first_utc", "first_msk", "last_utc", "last_msk", "coords", "course"), show="headings")
-        
-        self.tree.heading("icao", text="ICAO")
-        self.tree.heading("first_utc", text="Первое (UTC)")
-        self.tree.heading("first_msk", text="Первое (МСК)")
-        self.tree.heading("last_utc", text="Последнее (UTC)")
-        self.tree.heading("last_msk", text="Последнее (МСК)")
-        self.tree.heading("coords", text="Координаты")
-        self.tree.heading("course", text="Курс")
-
-        for col in self.tree['columns']: self.tree.column(col, anchor='center', width=120)
-        self.tree.column("icao", width=80)
-
-        self.populate_table()
-
-        scrollbar = ttk.Scrollbar(master, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        
-        scrollbar.pack(side="right", fill="y")
-        self.tree.pack(side="left", fill="both", expand=True)
-
-        self.tree.bind("<Double-1>", self.on_double_click)
-
-    def populate_table(self):
-        icao_times = self.all_data['times']
-        icao_positions = self.all_data['positions']
-        icao_course = self.all_data['course']
-        tz_msk = pytz.timezone('Europe/Moscow')
-
-        for icao, times in sorted(icao_times.items()):
-            first_utc = timestamp_to_utc(times["first"])
-            last_utc = timestamp_to_utc(times["last"])
-            first_msk = first_utc.astimezone(tz_msk)
-            last_msk = last_utc.astimezone(tz_msk)
-            coord_flag = "да" if icao in icao_positions and icao_positions[icao] else "нет"
-            course_flag = "да" if icao in icao_course and icao_course[icao] else "нет"
-            
-            self.tree.insert("", "end", values=(
-                icao,
-                first_utc.strftime('%Y-%m-%d %H:%M:%S'),
-                first_msk.strftime('%Y-%m-%d %H:%M:%S'),
-                last_utc.strftime('%Y-%m-%d %H:%M:%S'),
-                last_msk.strftime('%Y-%m-%d %H:%M:%S'),
-                coord_flag,
-                course_flag
-            ))
-
-    def on_double_click(self, event):
-        selected_item = self.tree.focus()
-        if not selected_item: return
-        
-        selected_icao = self.tree.item(selected_item, "values")[0]
-        print(f"Выбран борт {selected_icao}, открываем графики...")
-
-        coords_to_plot = {selected_icao: self.all_data['positions'].get(selected_icao, [])}
-        course_to_plot = {selected_icao: self.all_data['course'].get(selected_icao, [])}
-
-        IcaoGraphs(coords_to_plot, course_to_plot)
-
-
-if __name__ == "__main__":
-    # настраиваем и парсим аргументы командной строки
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("-f", "--file", default=DEFAULT_FILE)
-    parser.add_argument("-a", "--aircraft", help="ICAO борта для фильтрации")
+    parser.add_argument("-f", "--file", help="Имя входного файла", default=DEFAULT_FILE)
+    parser.add_argument("-a", "--aircraft", help="ICAO адрес конкретного борта")
     args = parser.parse_args()
-    
+
+    file_path = args.file
     target_icao = args.aircraft.upper() if args.aircraft else None
 
-    print(f"Идет обработка файла {args.file}, пожалуйста, подождите...")
-    
-    # создаём пустые словари, куда будем складывать все найденные данные
-    icao_times, icao_positions, icao_course = {}, {}, {}
-    cpr_messages = {} 
+    icao_times = {}
+    icao_altitude = {}
+    icao_speed = {}
+    icao_callsigns = {}
+    icao_selected_altitude = {}
+    icao_has_selected_alt = {}
+    adsb_icao_list = set()
+    icao_positions = {}
+    icao_courses = {}
+    cpr_messages = {}
 
     try:
-        with open(args.file, "r") as f:
-            # используем enumerate для получения номера строки
+        with open(file_path, "r") as f:
             for line_num, line in enumerate(f, 1):
-                if not line.strip(): continue 
-                
-                parsed = parse_adsb_line(line)
-                if not parsed: continue
-                timestamp, msg_str = parsed
+                if not line.strip(): continue
+                parsed = parse_ads_b_line(line)
+                if parsed is None: continue
+                msg, message_spaced, message_str = parsed
 
                 try:
-                    aa = pms.icao(msg_str) 
-                    if pms.df(msg_str) != 17: continue 
-                except Exception:
-                    continue
-                
-                # Логика фильтрации
-                if target_icao and aa != target_icao:
+                    df = pms.df(message_str)
+                    aa = pms.icao(message_str)
+                except Exception as e:
                     continue
 
-                # обновляем время первого и последнего появления борта
+                if df not in [17, 18]: continue
+                if target_icao and aa != target_icao: continue
+
+                adsb_icao_list.add(aa)
+
                 if aa not in icao_times:
-                    icao_times[aa] = {"first": timestamp, "last": timestamp}
+                    icao_times[aa] = {"first": msg.timestamp, "last": msg.timestamp}
                 else:
-                    icao_times[aa]["last"] = timestamp
+                    icao_times[aa]["last"] = msg.timestamp
                 
-                # получение координат
                 try:
-                    tc = pms.adsb.typecode(msg_str) 
+                    tc = pms.adsb.typecode(message_str)
                     if 9 <= tc <= 18:
+                        alt = get_altitude(message_str)
+                        if alt is not None and -1000 <= alt <= 50000:
+                            icao_altitude.setdefault(aa, []).append((msg.timestamp, alt))
+                        
                         cpr_messages.setdefault(aa, [None, None])
-                        oe_flag = pms.adsb.oe_flag(msg_str) 
-                        cpr_messages[aa][oe_flag] = (msg_str, timestamp)
-
-                        # если обе ячейки заполнены, у нас есть пара
+                        oe_flag = pms.adsb.oe_flag(message_str)
+                        cpr_messages[aa][oe_flag] = (message_str, msg.timestamp)
                         if all(cpr_messages[aa]):
                             msg0, t0 = cpr_messages[aa][0]
                             msg1, t1 = cpr_messages[aa][1]
-                            
-                            # проверяем, что сообщения "свежие"
                             if abs(t0 - t1) < 10:
-                                # главная функция декодирования
                                 pos = pms.adsb.position(msg0, msg1, t0, t1)
                                 if pos:
-                                    lat, lon = pos
-                                    icao_positions.setdefault(aa, []).append((timestamp, lat, lon))
-                                # очищаем ячейки для поиска новой пары
+                                    icao_positions.setdefault(aa, []).append((msg.timestamp, pos[0], pos[1]))
                                 cpr_messages[aa] = [None, None]
+                    
+                    elif tc == 19:
+                        gs = get_velocity(message_str)
+                        if gs is not None and 0 <= gs <= 1000:
+                            icao_speed.setdefault(aa, []).append((msg.timestamp, gs))
+                        
+                        course = get_course(message_str)
+                        if course is not None:
+                            icao_courses.setdefault(aa, []).append((msg.timestamp, course))
+
+                    elif 1 <= tc <= 4:
+                        cs = get_callsign(message_str)
+                        if cs: icao_callsigns[aa] = cs
+
+                    elif tc == 29:
+                        sel_alt = get_selected_altitude(message_str)
+                        if sel_alt:
+                            sel_alt_value, modes = sel_alt
+                            icao_selected_altitude.setdefault(aa, []).append((msg.timestamp, sel_alt_value))
+                            icao_has_selected_alt[aa] = True
+                            modes_key = f"{aa}_modes"
+                            existing_modes = icao_callsigns.get(modes_key, set())
+                            icao_callsigns[modes_key] = existing_modes.union(modes)
                 except Exception:
-                    pass
-                
-                # получение курса
-                course = get_course(msg_str)
-                if course is not None:
-                    icao_course.setdefault(aa, []).append((timestamp, course))
+                    continue
 
-        all_aircraft_data = {
-            'times': icao_times,
-            'positions': icao_positions,
-            'course': icao_course
-        }
+        print("=" * 145)
+        print(" "*55 + "Сводная таблица")
+        print("=" * 145)
+        print(f"{'ICAO':<8} {'Номер рейса':<12} {'Первое (UTC)':<33} {'Последнее (UTC)':<33} {'Координаты':<12} {'Курс':<8} {'Выб. высота':<12}")
+        print("-" * 145)
 
-        print("Обработка завершена. Запуск интерфейса...")
-        root = tk.Tk()
-        app = AircraftTableGUI(root, all_aircraft_data)
-        root.mainloop()
+        for icao in sorted(list(adsb_icao_list)):
+            if icao not in icao_times: continue
+            times = icao_times[icao]
+            first_utc_str = format_timestamp_with_nanoseconds(times["first"])
+            last_utc_str = format_timestamp_with_nanoseconds(times["last"])
+            callsign = icao_callsigns.get(icao, "N/A")
+            sel_alt_flag = "Да" if icao_has_selected_alt.get(icao) else "Нет"
+            coord_flag = "Да" if icao in icao_positions and icao_positions[icao] else "Нет"
+            course_flag = "Да" if icao in icao_courses and icao_courses[icao] else "Нет"
+            print(f"{icao:<8} {callsign:<12} {first_utc_str:<33} "
+                  f"{last_utc_str:<33} "
+                  f"{coord_flag:<12} {course_flag:<8} {sel_alt_flag:<12}")
+            
+        print(f"\nВсего бортов: {len(adsb_icao_list)}\n")
+
+        IcaoGraphs(icao_altitude, icao_speed, icao_positions, icao_courses, adsb_icao_list, icao_callsigns, icao_selected_altitude)
 
     except FileNotFoundError:
-        print(f"ошибка: файл '{args.file}' не найден.")
+        print(f"Файл {file_path} не найден")
     except Exception as e:
-        print(f"произошла непредвиденная ошибка: {e}")
+        print(f"Произошла критическая ошибка: {e}")
