@@ -272,7 +272,7 @@ class IcaoGraphs:
                 if geo_data:
                     times = [timestamp_to_utc(t) for t, v in sorted(geo_data)]
                     values = [v for t, v in sorted(geo_data)]
-                    self.ax.plot(times, values, 's-', markersize=2, label='Геометрическая высота', color='green', linestyle=':')
+                    self.ax.plot(times, values, 'o-', markersize=2, label='Геометрическая высота', color='green', linestyle='-')
         
         elif mode == 'speed':
             data = self.spd_dict.get(icao)
