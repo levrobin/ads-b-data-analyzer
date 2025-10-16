@@ -194,6 +194,7 @@ class IcaoGraphs:
         }
 
         self.fig, self.ax = plt.subplots(figsize=(12, 7))
+        self.fig.canvas.manager.set_window_title('Графики бортов')
         plt.subplots_adjust(bottom=0.25)
 
         ax_prev_icao = plt.axes([0.05, 0.05, 0.2, 0.075])
