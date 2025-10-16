@@ -146,7 +146,6 @@ def get_baro_correction(msg_str):
         return None
         
     except Exception as e:
-        print(f"Ошибка в get_baro_correction: {e}")
         return None
 
 def get_callsign(msg_str):
@@ -178,7 +177,7 @@ class IcaoGraphs:
         self.icao_callsigns = icao_callsigns
         self.sel_alt_dict = icao_sel_alt if icao_sel_alt else {}
         self.alt_diff_dict = icao_alt_diff if icao_alt_diff else {}
-        self.baro_correction_dict = icao_baro_correction if icao_baro_correction else {}
+        self.baro_correction_dict = icao_baro_correction if icao_baro_correction else {} 
         self.icao_index = 0
         # Новые типы графиков
         self.plot_modes = ['altitude', 'speed', 'latitude', 'course', 'track', 'altitude_diff', 'baro_correction']
