@@ -9,9 +9,7 @@ from matplotlib.widgets import Button
 MAX_MESSAGE_LENGTH = 14
 DEFAULT_FILE = "2025-10-03.1759515715.074510429.t4433"
 
-transition_altitude = 10000
-
-# словарь для преобразования режимов автопилота
+# Словарь для преобразования режимов автопилота
 MODE_MAP = {
     'U': 'AP',      # Autopilot On
     '/': 'ALT',     # Altitude Hold
@@ -58,7 +56,6 @@ def format_timestamp_with_nanoseconds(ts):
     nanoseconds_str = ts_str.split('.')[1]
     return f"{main_dt_str}.{nanoseconds_str}"
 
-# функция получения барометрической высоты
 def get_altitude(msg_str):
     try:
         df = pms.df(msg_str)
@@ -68,56 +65,6 @@ def get_altitude(msg_str):
             return pms.adsb.altitude(msg_str)
         return None
     except:
-        return None
-
-# функция получения геометрической высоты
-def get_geometric_altitude(msg0, msg1, t0, t1):
-    try:
-        pos = pms.adsb.position(msg0, msg1, t0, t1)
-        if not pos:
-            return None
-
-        alt_baro = get_altitude(msg0)
-        if alt_baro is not None:
-            # приближённая геометрическая высота: добавляем стандартную поправку над геоидом
-            geo_alt = alt_baro + 0  # без случайного шума
-            return geo_alt
-        return None
-    except Exception as e:
-        print(f"Ошибка получения геометрической высоты: {e}")
-        return None
-
-
-# функция получения барокоррекции
-def get_baro_correction(msg_str, altitude=None):
-    try:
-        df = pms.df(msg_str)
-        if df not in [17, 18]: 
-            return None
-        
-        # Метод через BDS коды
-        try:
-            bds = pms.bds.infer(msg_str)
-            if bds == 'B40':
-                alt_data = pms.commb.selalt(msg_str)
-                if alt_data and 'qfe' in alt_data:
-                    qfe = alt_data['qfe']
-                    if 800 <= qfe <= 1100:
-                        return qfe
-                        
-        except:
-            pass
-
-        # если BDS4,0 нет или нет qfe, используем имитацию
-        if altitude is not None and altitude < transition_altitude:
-            # QNH до перехода — примерно 1013 ± 5 гПа
-            return 1013 + np.random.normal(0, 2)
-        else:
-            # после перехода — стандартное давление
-            return 1013.25
-
-    except Exception as e:
-        print(f"Ошибка получения барокоррекции: {e}")
         return None
 
 def get_velocity(msg_str):
@@ -162,6 +109,46 @@ def get_selected_altitude(msg_str):
     except Exception as e:
         return None
 
+# Функция получения разности высот
+def get_altitude_difference(msg_str):
+    try:
+        tc = pms.typecode(msg_str)
+        if tc != 19:
+            return None
+        
+        altitude_diff = pms.adsb.altitude_diff(msg_str)
+        if altitude_diff is not None and -2500 <= altitude_diff <= 2500:
+            return altitude_diff
+        
+        return None
+    except Exception as e:
+        return None
+
+
+# Функция получения барокоррекции
+def get_baro_correction(msg_str):
+    try:
+        df = pms.df(msg_str)
+        if df not in [17, 18]:
+            return None
+            
+        tc = pms.adsb.typecode(msg_str)
+        if tc != 29:
+            return None
+        
+        baro_setting = pms.adsb.baro_pressure_setting(msg_str)
+        
+        if baro_setting is not None:
+            # разумные пределы для атмосферного давления
+            if 800 <= baro_setting <= 1100:
+                return baro_setting
+                
+        return None
+        
+    except Exception as e:
+        print(f"Ошибка в get_baro_correction: {e}")
+        return None
+
 def get_callsign(msg_str):
     try:
         df = pms.df(msg_str)
@@ -176,8 +163,7 @@ def get_callsign(msg_str):
         return None
 
 class IcaoGraphs:
-    def __init__(self, alt_dict, spd_dict, pos_dict, course_dict, adsb_icao_list, icao_callsigns, icao_sel_alt, 
-                 icao_geo_alt=None, icao_baro_correction=None):
+    def __init__(self, alt_dict, spd_dict, pos_dict, course_dict, adsb_icao_list, icao_callsigns, icao_sel_alt, icao_alt_diff, icao_baro_correction):
         icao_with_data = set(alt_dict.keys()) | set(spd_dict.keys()) | set(pos_dict.keys()) | set(course_dict.keys())
         self.icao_list = sorted(list(icao_with_data.intersection(adsb_icao_list)))
         
@@ -191,20 +177,21 @@ class IcaoGraphs:
         self.course_dict = course_dict
         self.icao_callsigns = icao_callsigns
         self.sel_alt_dict = icao_sel_alt if icao_sel_alt else {}
-        self.geo_alt_dict = icao_geo_alt if icao_geo_alt else {}
+        self.alt_diff_dict = icao_alt_diff if icao_alt_diff else {}
         self.baro_correction_dict = icao_baro_correction if icao_baro_correction else {}
-        
         self.icao_index = 0
-        self.plot_modes = ['altitude', 'speed', 'latitude', 'course', 'track', 'altitude_comparison', 'baro_correction']
+        # Новые типы графиков
+        self.plot_modes = ['altitude', 'speed', 'latitude', 'course', 'track', 'altitude_diff', 'baro_correction']
         self.plot_mode_idx = 0
         self.ylims = {mode: {} for mode in self.plot_modes}
+        # Пределы по умолчанию для новых графиков
         self.default_ylims = {
             'altitude': (-1200, 40000), 
             'speed': (0, 500), 
             'course': (0, 360), 
             'latitude': 'auto',
-            'altitude_comparison': (-500, 500),
-            'baro_correction': (950, 1050)
+            'altitude_diff': (-2000, 2000),  # Разница высот в футах
+            'baro_correction': (950, 1050)   # Барокоррекция в гПа
         }
 
         self.fig, self.ax = plt.subplots(figsize=(12, 7))
@@ -255,10 +242,8 @@ class IcaoGraphs:
         if mode == 'altitude':
             data = self.alt_dict.get(icao)
             sel_data = self.sel_alt_dict.get(icao)
-            geo_data = self.geo_alt_dict.get(icao)
-            baro_data = self.baro_correction_dict.get(icao)
             title, label = f"Изменение высоты: {display_id}", "Высота (футы)"
-            if not data and not sel_data and not geo_data:
+            if not data and not sel_data:
                 self.ax.text(0.5, 0.5, f"Нет данных о высоте для борта {icao}", ha='center', va='center')
             else:
                 if data:
@@ -269,10 +254,6 @@ class IcaoGraphs:
                     times = [timestamp_to_utc(t) for t, v in sorted(sel_data)]
                     values = [v for t, v in sorted(sel_data)]
                     self.ax.step(times, values, where='post', label='Выбранная высота', color='red', linestyle='--')
-                if geo_data:
-                    times = [timestamp_to_utc(t) for t, v in sorted(geo_data)]
-                    values = [v for t, v in sorted(geo_data)]
-                    self.ax.plot(times, values, 'o-', markersize=2, label='Геометрическая высота', color='green', linestyle='-')
         
         elif mode == 'speed':
             data = self.spd_dict.get(icao)
@@ -314,57 +295,29 @@ class IcaoGraphs:
                 lats = [lat for t, lat, lon in data]
                 self.ax.plot(lons, lats, 'o', markersize=2, label='Трек')
 
-        elif mode == 'altitude_comparison':
-            baro_data = self.alt_dict.get(icao)
-            geo_data = self.geo_alt_dict.get(icao)
-            title, label = f"Разница барометрической и геометрической высот: {display_id}", "Разница высот (футы)"
+        elif mode == 'altitude_diff':
+            data = self.alt_diff_dict.get(icao)
+            title, label = f"Разница высот (DIF_FROM_BARO_ALT): {display_id}", "Разница высот (футы)"
             
-            if not baro_data or not geo_data:
-                self.ax.text(0.5, 0.5, f"Недостаточно данных для сравнения высот {icao}", ha='center', va='center')
+            if not data:
+                self.ax.text(0.5, 0.5, f"Нет данных о разнице высот для борта {icao}", ha='center', va='center')
             else:
-                # создание словарей для быстрого поиска высот по времени
-                baro_dict = {t: alt for t, alt in baro_data}
-                geo_dict = {t: alt for t, alt in geo_data}
-                
-                # общие временные точки
-                common_times = sorted(set(baro_dict.keys()) & set(geo_dict.keys()))
-                
-                if not common_times:
-                    self.ax.text(0.5, 0.5, f"Нет общих временных точек для сравнения {icao}", ha='center', va='center')
-                else:
-                    times = [timestamp_to_utc(t) for t in common_times]
-                    differences = [baro_dict[t] - geo_dict[t] for t in common_times]
-                    
-                    self.ax.plot(times, differences, 'o-', markersize=3, label='Разница (барометрическая - геометрическая)', color='red')
-                    self.ax.axhline(y=0, color='gray', linestyle='--', alpha=0.7)
-                    
-                    # статистика
-                    if differences:
-                        avg_diff = np.mean(differences)
-                        max_diff = np.max(differences)
-                        min_diff = np.min(differences)
-                        stats_text = f"Средняя: {avg_diff:.1f} фт\nМакс: {max_diff:.1f} фт\nМин: {min_diff:.1f} фт"
-                        self.ax.text(0.02, 0.98, stats_text, transform=self.ax.transAxes, 
-                                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-        
+                times = [timestamp_to_utc(t) for t, v in sorted(data)]
+                values = [v for t, v in sorted(data)]
+                self.ax.plot(times, values, 'o-', markersize=3, label='Разница высот (выбранная - барометрическая)', color='red')
+                self.ax.axhline(y=0, color='gray', linestyle='--', alpha=0.7, label='Нулевая разница')
+
         elif mode == 'baro_correction':
             data = self.baro_correction_dict.get(icao)
             title, label = f"Барокоррекция: {display_id}", "Давление (гПа)"
+            
             if not data:
                 self.ax.text(0.5, 0.5, f"Нет данных о барокоррекции для борта {icao}", ha='center', va='center')
             else:
                 times = [timestamp_to_utc(t) for t, v in sorted(data)]
                 values = [v for t, v in sorted(data)]
                 self.ax.plot(times, values, 'o-', markersize=3, label='Барокоррекция', color='brown')
-                
-                # статистика
-                if values:
-                    avg_pressure = np.mean(values)
-                    min_pressure = np.min(values)
-                    max_pressure = np.max(values)
-                    stats_text = f"Среднее: {avg_pressure:.1f} гПа\nМин: {min_pressure:.1f} гПа\nМакс: {max_pressure:.1f} гПа"
-                    self.ax.text(0.02, 0.98, stats_text, transform=self.ax.transAxes, 
-                               verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                self.ax.axhline(y=1013.25, color='green', linestyle='--', alpha=0.7, label='Стандартное давление (1013.25 гПа)')
         
         self.ax.set_title(title)
         self.ax.grid(True, linestyle='--', alpha=0.7)
@@ -388,7 +341,6 @@ class IcaoGraphs:
             self.ax.set_ylim(ylim)
 
         self.fig.canvas.draw_idle()
-
 
     def on_scroll(self, event):
         if event.inaxes != self.ax or self.plot_modes[self.plot_mode_idx] == 'track': return
@@ -449,13 +401,13 @@ if __name__ == '__main__':
     icao_speed = {}
     icao_callsigns = {}
     icao_selected_altitude = {}
+    icao_altitude_difference = {}
+    icao_baro_correction = {}
     icao_has_selected_alt = {}
     adsb_icao_list = set()
     icao_positions = {}
     icao_courses = {}
     cpr_messages = {}
-    icao_geometric_altitude = {}
-    icao_baro_correction = {}
 
     try:
         with open(file_path, "r") as f:
@@ -487,9 +439,6 @@ if __name__ == '__main__':
                         alt = get_altitude(message_str)
                         if alt is not None and -1000 <= alt <= 50000:
                             icao_altitude.setdefault(aa, []).append((msg.timestamp, alt))
-                            
-                            geo_alt = alt + np.random.normal(0, 50)
-                            icao_geometric_altitude.setdefault(aa, []).append((msg.timestamp, geo_alt))
                         
                         cpr_messages.setdefault(aa, [None, None])
                         oe_flag = pms.adsb.oe_flag(message_str)
@@ -501,13 +450,7 @@ if __name__ == '__main__':
                                 pos = pms.adsb.position(msg0, msg1, t0, t1)
                                 if pos:
                                     icao_positions.setdefault(aa, []).append((msg.timestamp, pos[0], pos[1]))
-
-
-                                geo_alt = get_geometric_altitude(msg0, msg1, t0, t1)
-                                if geo_alt is not None:
-                                    icao_geometric_altitude.setdefault(aa, []).append((msg.timestamp, geo_alt))
-                            cpr_messages[aa] = [None, None]
-
+                                cpr_messages[aa] = [None, None]
                     
                     elif tc == 19:
                         gs = get_velocity(message_str)
@@ -517,6 +460,11 @@ if __name__ == '__main__':
                         course = get_course(message_str)
                         if course is not None:
                             icao_courses.setdefault(aa, []).append((msg.timestamp, course))
+                        
+                        # Получение разницы высот
+                        alt_diff = get_altitude_difference(message_str)
+                        if alt_diff is not None:
+                            icao_altitude_difference.setdefault(aa, []).append((msg.timestamp, alt_diff))
 
                     elif 1 <= tc <= 4:
                         cs = get_callsign(message_str)
@@ -531,24 +479,20 @@ if __name__ == '__main__':
                             modes_key = f"{aa}_modes"
                             existing_modes = icao_callsigns.get(modes_key, set())
                             icao_callsigns[modes_key] = existing_modes.union(modes)
-                    
-                    # получение барокоррекции
-                    if 9 <= tc <= 18:
-                        alt = get_altitude(message_str)
-                        if alt is not None:
-                            baro_corr = get_baro_correction(message_str, altitude=alt)
-                            if baro_corr is not None:
-                                icao_baro_correction.setdefault(aa, []).append((msg.timestamp, baro_corr))
+                        
+                        # Получение барокоррекции
+                        baro_corr = get_baro_correction(message_str)
+                        if baro_corr is not None:
+                            icao_baro_correction.setdefault(aa, []).append((msg.timestamp, baro_corr))
                             
-                except Exception as e:
-                    print(f"Ошибка обработки сообщения: {e}")
+                except Exception:
                     continue
 
-        print("=" * 145)
-        print(" "*55 + "Сводная таблица")
-        print("=" * 145)
-        print(f"{'ICAO':<8} {'Номер рейса':<12} {'Первое (UTC)':<33} {'Последнее (UTC)':<33} {'Координаты':<12} {'Курс':<8} {'Выб. высота':<12} {'Гео. высота':<12} {'Барокорр.':<10}")
-        print("-" * 145)
+        print("=" * 160)
+        print(" "*60 + "Сводная таблица")
+        print("=" * 160)
+        print(f"{'ICAO':<8} {'Номер рейса':<12} {'Первое (UTC)':<33} {'Последнее (UTC)':<33} {'Координаты':<12} {'Курс':<8} {'Выб. высота':<12} {'Разн. высот':<12} {'Барокорр.':<10}")
+        print("-" * 160)
 
         for icao in sorted(list(adsb_icao_list)):
             if icao not in icao_times: continue
@@ -559,17 +503,15 @@ if __name__ == '__main__':
             sel_alt_flag = "Да" if icao_has_selected_alt.get(icao) else "Нет"
             coord_flag = "Да" if icao in icao_positions and icao_positions[icao] else "Нет"
             course_flag = "Да" if icao in icao_courses and icao_courses[icao] else "Нет"
-            geo_alt_flag = "Да" if icao in icao_geometric_altitude and icao_geometric_altitude[icao] else "Нет"
+            alt_diff_flag = "Да" if icao in icao_altitude_difference and icao_altitude_difference[icao] else "Нет"
             baro_corr_flag = "Да" if icao in icao_baro_correction and icao_baro_correction[icao] else "Нет"
-            
             print(f"{icao:<8} {callsign:<12} {first_utc_str:<33} "
                   f"{last_utc_str:<33} "
-                  f"{coord_flag:<12} {course_flag:<8} {sel_alt_flag:<12} {geo_alt_flag:<12} {baro_corr_flag:<10}")
+                  f"{coord_flag:<12} {course_flag:<8} {sel_alt_flag:<12} {alt_diff_flag:<12} {baro_corr_flag:<10}")
             
         print(f"\nВсего бортов: {len(adsb_icao_list)}\n")
 
-        IcaoGraphs(icao_altitude, icao_speed, icao_positions, icao_courses, adsb_icao_list, 
-                  icao_callsigns, icao_selected_altitude, icao_geometric_altitude, icao_baro_correction)
+        IcaoGraphs(icao_altitude, icao_speed, icao_positions, icao_courses, adsb_icao_list, icao_callsigns, icao_selected_altitude, icao_altitude_difference, icao_baro_correction)
 
     except FileNotFoundError:
         print(f"Файл {file_path} не найден")
