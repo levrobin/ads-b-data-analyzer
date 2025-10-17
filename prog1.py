@@ -130,7 +130,7 @@ def get_selected_altitude(msg_str):
         if sel_alt_info is None: return None
         selected_alt, raw_modes = sel_alt_info
         if selected_alt is not None and -2000 <= selected_alt <= 50000:
-            # переводим сырые режимы в понятные сокращения
+            # переводим режимы в понятные сокращения
             processed_modes = {MODE_MAP.get(m, m) for m in raw_modes}
             return selected_alt, processed_modes
         return None
@@ -217,7 +217,7 @@ class IcaoGraphs:
         self.icao_callsigns = icao_callsigns
         self.sel_alt_dict = icao_sel_alt if icao_sel_alt else {}
         self.alt_diff_dict = icao_alt_diff if icao_alt_diff else {}
-        self.baro_correction_dict = icao_baro_correction if icao_baro_correction else {}
+        self.baro_correction_dict = icao_baro_correction if icao_baro_correction else {} 
         self.icao_index = 0
         
         # список доступных режимов (типов графиков)
@@ -409,19 +409,21 @@ class IcaoGraphs:
         # блок отрисовки графика разницы высот 
         elif mode == 'altitude_diff':
             data = self.alt_diff_dict.get(icao)
-            title, label = f"Разница высот: {display_id}", "Разница высот (футы)"
+            title, label = f"Разница высот (DIF_FROM_BARO_ALT): {display_id}", "Разница высот (футы)"
+            
             if not data:
                 self.ax.text(0.5, 0.5, f"Нет данных о разнице высот для борта {icao}", ha='center', va='center')
             else:
                 times = [timestamp_to_utc(t) for t, v in sorted(data)]
                 values = [v for t, v in sorted(data)]
-                self.ax.plot(times, values, 'o-', markersize=3, label='Разница высот (геом. - баром.)', color='red')
+                self.ax.plot(times, values, 'o-', markersize=3, label='Разница высот (выбранная - барометрическая)', color='red')
                 self.ax.axhline(y=0, color='gray', linestyle='--', alpha=0.7, label='Нулевая разница')
 
         # блок отрисовки графика барокоррекции 
         elif mode == 'baro_correction':
             data = self.baro_correction_dict.get(icao)
             title, label = f"Барокоррекция: {display_id}", "Давление (гПа)"
+            
             if not data:
                 self.ax.text(0.5, 0.5, f"Нет данных о барокоррекции для борта {icao}", ha='center', va='center')
             else:
@@ -626,6 +628,7 @@ if __name__ == '__main__':
                         if course is not None:
                             icao_courses.setdefault(aa, []).append((msg.timestamp, course))
                         
+                        # Получение разницы высот
                         alt_diff = get_altitude_difference(message_str)
                         if alt_diff is not None:
                             icao_altitude_difference.setdefault(aa, []).append((msg.timestamp, alt_diff))
@@ -646,6 +649,7 @@ if __name__ == '__main__':
                             existing_modes = icao_callsigns.get(modes_key, set())
                             icao_callsigns[modes_key] = existing_modes.union(modes)
                         
+                        # Получение барокоррекции
                         baro_corr = get_baro_correction(message_str)
                         if baro_corr is not None:
                             icao_baro_correction.setdefault(aa, []).append((msg.timestamp, baro_corr))
